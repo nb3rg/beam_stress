@@ -1,0 +1,257 @@
+%Clean up excess code
+%get applied distributed loads working (constant over distance)
+%add in lines to calculate stress and FOS, use function
+%get working for shafts with different cross sections => mainly square, I-beam, square extrusion, and round tube
+%%%%%^^^^ mainly just if statements for stress equation and volume equation, everything else should stay same
+%%%^^^^ likely just switch stress equation to Mc/I
+
+
+%Script to plot shear force and bending moments diagrams for circular shafts, as well as calculate stress and FOS
+%Nathan Berg 07/18/2018
+%Cartesian coordinate system based at bottom left end of beam, start ordinate dimensions at 0
+%input all units in standard SI
+
+%REUPLOAD EXCEL SHEET TO BE SURE OF RESULTS
+%CHECK MANUAL ENTRY FOR MAX BM STRESS EQUATION
+
+%format long
+
+%Excel data
+%sheet1 = xlsread('Shaft data', 1);
+diameter = xlsread('Shaft data', 2, 'B:H');
+length = xlsread('Shaft data', 3, 'B:H');
+weight = xlsread('Shaft data', 1, 'C');
+
+%Inputs
+Density = 7850; %kg/m^3
+Yieldstrength = 675*1000000; %[MPa] to [Pa]
+pointforces = weight; %N %%down is positive here, up is negative
+distpointforces = []/1000; %[cm] to [m]
+couples = []; %any point moments from loading, correctly enter positive and negative values%% units [N*cm] to [N*m]
+couplesdistance = []/1000; %distance from origin to couples%% units [cm] to [m]
+lengths = [length]/1000; %ordinate dimensions of all uniform sections %% units [cm] to [m]
+diameters = [diameter]/1000; %different diameters of shaft %% units [cm] to [m]
+Totallength = lengths(end); %Total length of shaft
+Aydist = 15.24/100; %location of support reaction A %%
+Bydist = Totallength-Aydist; %location of support reaction B %% units [cm] to [m]
+discontinuities = [0 Aydist lengths(1,2:6) Bydist lengths(1,end)]; %all points of discontinuity, used for plotting%% units [cm] to [m]
+tol = eps(2); %tolerance for when == doesnt work
+fradii = []/1000; %fillet radii for stress concentration factor
+k_t = []; %Stress concentration factors corresponding to the steps in the shaft
+uncertainty = 1.15; %model uncertainty factor
+
+%Simple calculations
+AtoBdist = Bydist - Aydist; %distance between supports A and B
+distpointforcesfromA = distpointforces - Aydist;
+sdiscontinuities = size(discontinuities);
+spointforces = size(pointforces);
+scouples = size(couples);
+sk_t = size(k_t);
+sfradii = size(fradii);
+
+%Reference check
+slengths = size(lengths);
+sdiameters = size(diameters);
+if isequal(slengths,sdiameters)
+    disp('OK to continue')
+else
+    disp('DIAMETER AND LENGTHS DIMENSIONS DONT AGREE')
+    return
+end
+
+%Point and distributed load calculations
+masterloads = zeros(2, sdiameters(2)-1); %preallocate
+for x=1:(sdiameters(2)-1) %creates matrix with values of point loads and distributed loads on shaft called Masterloads = [pointloads; distloads]
+    [pointloadx, distloadx] = shaftdistload(diameters(x+1), (lengths(x+1)- lengths(x)), Density);
+    masterloads(:,x) = [pointloadx, distloadx];
+end
+smasterloads = size(masterloads);
+
+%Where distributed loads act in reference to origin
+interacts = zeros(1,sdiameters(2)-1); %preallocate
+for x = 1:(sdiameters(2)-1) %creates vectors with distance of distributed loads modeled as point load from origin and support at A
+    acts = ((lengths(x+1)-lengths(x))/2) + lengths(x);
+    interacts(:,x) = acts; %distance distributed loads modeled as point loads act from origin
+    masteracts = interacts - Aydist; %distance distributed loads modeled as point loads act from support at A
+end
+
+%Solve for reactions
+    By = (-sum(couples) + (sum(pointforces.*distpointforcesfromA)) + (sum(masteracts.*masterloads(1,:))))/AtoBdist;
+    Ay = -By + sum(masterloads(1,:)) + sum(pointforces);
+    
+%Interval setup
+masterinterval = cell(1, sdiscontinuities(2)-1); %preallocate
+for x=1:sdiscontinuities(2)-1
+    y = linspace(discontinuities(x),discontinuities(x+1),(discontinuities(x+1)-discontinuities(x))*1000);
+    masterinterval{1,x} = y;
+end
+smasterinterval = size(masterinterval);
+
+%Generating shear data
+V = cell(1, smasterinterval(2));%preallocate
+VC = zeros(1, smasterinterval(2));
+w = 1;
+x = 1;
+y = 1;
+z = 1;
+while x<=smasterinterval(2)
+    if abs(masterinterval{1,x}(1,1) - lengths(z)) < tol
+        z = z+1;
+        w = z-1;
+    end
+    if y>spointforces(2)
+        y = spointforces(2);
+    end
+    if x==1
+        VC(1,1) = 0;
+        V{1,x} = -(masterinterval{1,x} .* masterloads(2,w)) + VC(1,x);
+    elseif abs(masterinterval{1,x}(1,1) - Aydist) < tol
+        VC(1,x) = masterloads(2,w)*masterinterval{1,x-1}(end) + V{1,x-1}(end) + Ay;
+        V{1,x} = -(masterinterval{1,x} .* masterloads(2,w)) + VC(1,x);
+    elseif abs(masterinterval{1,x}(1,1) - distpointforces(y)) < tol
+        VC(1,x) = masterloads(2,w)*masterinterval{1,x-1}(end) + V{1,x-1}(end)  - pointforces(y);
+        V{1,x} = -(masterinterval{1,x} .* masterloads(2,w)) + VC(1,x);
+        y = y+1;
+    elseif abs(masterinterval{1,x}(1,1) - Bydist) < tol
+        VC(1,x) = masterloads(2,w)*masterinterval{1,x-1}(end) + V{1,x-1}(end) + By;
+        V{1,x} = -(masterinterval{1,x} .* masterloads(2,w)) + VC(1,x);
+    else
+        VC(1,x) = masterloads(2,w)*masterinterval{1,x-1}(end) + V{1,x-1}(end);
+        V{1,x} = -(masterinterval{1,x} .* masterloads(2,w)) + VC(1,x);
+    end
+    x = x+1;
+end
+
+%Shear Slopes
+slope = zeros(1, smasterinterval(2)); %preallocate
+for x=1:smasterinterval(2)
+    slope(1,x) = (V{1,x}(end) - V{1,x}(1,1))/(masterinterval{1,x}(end) - masterinterval{1,x}(1,1));
+end
+
+%Generating Bending Moment Data
+M = cell(1, smasterinterval(2));%preallocate
+MC = zeros(1, smasterinterval(2));
+w = 1;
+x = 1;
+y = 1;
+z = 1;
+while x<=smasterinterval(2)
+    if abs(masterinterval{1,x}(1,1) - lengths(z)) < tol 
+        z = z+1;
+        w = z-1;
+    end
+    if y>scouples(2)
+        y = scouples(2);
+    end
+    if x==1
+        MC(1,1) = 0;
+        M{1,x} = -(((masterinterval{1,x}).^2) .* (masterloads(2,w)/2));      
+    elseif abs(masterinterval{1,x}(1,1) - couplesdistance(y)) < tol
+        MC(1,x) = M{1,x-1}(end) + (((masterinterval{1,x-1}(end)).^2) * (masterloads(2,w)/2)) - (VC(1,x) * masterinterval{1,x-1}(end));
+        M{1,x} = -(((masterinterval{1,x}).^2) .* (masterloads(2,w)/2)) + (VC(1,x) .* masterinterval{1,x}) + MC(1,x) - couples(y);
+        y = y+1;
+    else
+        MC(1,x) = M{1,x-1}(end) + (((masterinterval{1,x-1}(end)).^2) * (masterloads(2,w)/2)) - (VC(1,x) * masterinterval{1,x-1}(end));
+        M{1,x} = -(((masterinterval{1,x}).^2) .* (masterloads(2,w)/2)) + (VC(1,x) .* masterinterval{1,x}) + MC(1,x);
+    end
+    x = x+1;
+end
+
+%Listing Start and Endpoints
+coordinatestart = zeros(3, smasterinterval(2)); %preallocate
+coordinatesend = zeros(3, smasterinterval(2)); %preallocate
+for z=1:smasterinterval(2)
+    Vys = V{1,z}(1,1);
+    Mys = M{1,z}(1,1);
+    xs = masterinterval{1,z}(1,1);
+    coordinatestart(:,z) = [xs;Vys;Mys];
+    Vye = V{1,z}(end);
+    Mye = M{1,z}(end);
+    xe = masterinterval{1,z}(end);
+    coordinatesend(:,z) = [xe;Vye;Mye];
+end
+
+%Plots
+interval = cell2mat(masterinterval);
+Vm = cell2mat(V);
+Vn = Vm*(-1);
+Mm = cell2mat(M);
+Mn = Mm*(-1);
+
+figure('Name', 'Shear diagram' )
+    plot(interval,Vm)
+    xlabel('x in meters')
+    ylabel('V in Newtons')
+    title('Shear diagram')
+figure('Name', 'Bending moment diagram')
+    plot(interval, Mm)
+    xlabel('x in meters')
+    ylabel('M in N*m')
+    title('Bending moment diagram')
+
+%Data displays
+format long
+disp('Row 1 is x values, Row 2 is shear values, Row 3 is BM values')
+Startpointcoordinates = coordinatestart
+Endpointcoordinates = coordinatesend
+Shearslopes = slope
+Ay = Ay;
+By = By;
+Vmax = findpeaks(Vm);
+Vmin = findpeaks(Vn) .* (-1);
+Mmax = findpeaks(Mm);
+Mmin = findpeaks(Mn) .* (-1);
+%disp(masterinterval);
+
+%Now use stress calculator script and stress calculator function to determine FOS
+
+%Stress Calculations
+%Variable setup
+interdia = diameters < max(diameters) & diameters~=0;
+diams = diameters(interdia);
+
+if sk_t == sfradii %Will give numbers of D/d and d/r to find K_t values if they are not already entered, otherwise it will determine stress and FOS
+    %Set up bending moment array
+    bm = zeros(2,slengths(2)-2); %preallocate
+    bendingmoments = zeros(1,slengths(2)-2); %preallocate
+    for x = 2:slengths(2)-1
+        A = lengths(1,x);
+        [~, col] = find(abs(A-Endpointcoordinates) < tol);
+        bm(1,x-1) = abs(Endpointcoordinates(3,col));
+        [~, col1] = find(abs(A-Startpointcoordinates) < tol);
+        bm(2,x-1) = abs(Startpointcoordinates(3,col1));
+        bendingmoments(1,x-1) = max(bm(:,x-1));
+    end
+    %At shoulders
+    sigma_nom = ((32.*bendingmoments)./(pi.*(diams.^3)));
+    sigma_max = k_t.*sigma_nom;
+    fos = Yieldstrength./sigma_max;
+
+    %Stress at max Bending Moment
+    [~,g] = find(abs(max(Mmax)-Startpointcoordinates) < tol);
+    [~,f] = find(abs(max(Mmax)-Endpointcoordinates) < tol);
+    if g>0 & f>0
+        bmax = (abs(Endpointcoordinates(3,f)));
+    elseif f>0
+        bmax = (abs(Endpointcoordinates(3,f)));
+    elseif g>0
+        bmax = (abs(Startpointcoordinates(3,g)));
+    end
+    %FOS at max bending moment, NEED TO ENTER IN DIAMETER AND K_T VALUES MANUALLY
+    [msigma_nom, msigma_max, fosm] = stresscalculator(diams(), bmax, k_t(), Yieldstrength);
+    %Overall min FOS
+    FOS = [fos fosm];
+    minFOS = min(FOS);
+    totalFOS = minFOS / uncertainty
+else   
+    %Values for k_t
+    D = zeros(2,sdiameters(2)-2);
+    D_d = zeros(1,sdiameters(2)-2);
+    for x = 2:sdiameters(2)-1     
+        D(1,x-1) = diameters(x+1);
+        D(2,x-1) = diameters(x);
+        D_d(1,x-1) = max(D(:,x-1))/min(D(:,x-1))
+    end
+    r_d = fradii./diams
+end
+%}
